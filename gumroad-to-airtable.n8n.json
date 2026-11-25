@@ -1,0 +1,286 @@
+{
+  "name": "Gumroad sales → Airtable (live webhook + backfill, no duplicates)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gumroad-sale",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Gumroad Ping (webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalises one Gumroad sale (Ping webhook body or /v2/sales API item) into one Airtable row.\nfunction normalizeSale(s) {\n  const cents = s.price !== undefined ? Number(s.price) : Math.round(Number(String(s.formatted_display_price || '0').replace(/[^0-9.]/g, '')) * 100);\n  return {\n    'Sale ID': String(s.sale_id || s.id),\n    'Email': String(s.email || s.purchaser_email || '').trim().toLowerCase(),\n    'Transaction Date': new Date(s.sale_timestamp || s.created_at).toISOString(),\n    'Amount': Math.round(cents) / 100,\n    'Currency': String(s.currency || 'usd').toUpperCase(),\n    'Product ID': String(s.product_id || s.product_permalink || ''),\n    'Product Name': String(s.product_name || ''),\n    'Refunded': String(s.refunded) === 'true',\n    'Source': s.sale_timestamp ? 'webhook' : 'backfill',\n  };\n}\n\nconst body = $input.first().json.body || $input.first().json;\nreturn [{ json: normalizeSale(body) }];"
+      },
+      "name": "Normalise sale",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $vars.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sales"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Sale ID"
+          ]
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "name": "Upsert to Airtable (by Sale ID)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "ok",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "name": "Reply 200 to Gumroad",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Run backfill manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "name": "Every 6 h safety net",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.gumroad.com/v2/sales",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $vars.GUMROAD_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "after",
+              "value": "={{ $now.minus({days: 30}).toFormat('yyyy-MM-dd') }}"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page_key",
+                    "value": "={{ $response.body.next_page_key }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !$response.body.next_page_key }}"
+            }
+          }
+        }
+      },
+      "name": "Gumroad API: list sales (paged)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalises one Gumroad sale (Ping webhook body or /v2/sales API item) into one Airtable row.\nfunction normalizeSale(s) {\n  const cents = s.price !== undefined ? Number(s.price) : Math.round(Number(String(s.formatted_display_price || '0').replace(/[^0-9.]/g, '')) * 100);\n  return {\n    'Sale ID': String(s.sale_id || s.id),\n    'Email': String(s.email || s.purchaser_email || '').trim().toLowerCase(),\n    'Transaction Date': new Date(s.sale_timestamp || s.created_at).toISOString(),\n    'Amount': Math.round(cents) / 100,\n    'Currency': String(s.currency || 'usd').toUpperCase(),\n    'Product ID': String(s.product_id || s.product_permalink || ''),\n    'Product Name': String(s.product_name || ''),\n    'Refunded': String(s.refunded) === 'true',\n    'Source': s.sale_timestamp ? 'webhook' : 'backfill',\n  };\n}\n\nconst out = [];\nfor (const item of $input.all()) { for (const s of (item.json.sales || [])) out.push({ json: normalizeSale(s) }); }\nreturn out;"
+      },
+      "name": "Normalise each sale",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $vars.AIRTABLE_BASE_ID }}"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sales"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Sale ID"
+          ]
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "name": "Upsert backfill (by Sale ID)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        720,
+        340
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "",
+          "name": "Airtable account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gumroad Ping (webhook)": {
+      "main": [
+        [
+          {
+            "node": "Normalise sale",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise sale": {
+      "main": [
+        [
+          {
+            "node": "Upsert to Airtable (by Sale ID)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert to Airtable (by Sale ID)": {
+      "main": [
+        [
+          {
+            "node": "Reply 200 to Gumroad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run backfill manually": {
+      "main": [
+        [
+          {
+            "node": "Gumroad API: list sales (paged)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 6 h safety net": {
+      "main": [
+        [
+          {
+            "node": "Gumroad API: list sales (paged)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gumroad API: list sales (paged)": {
+      "main": [
+        [
+          {
+            "node": "Normalise each sale",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise each sale": {
+      "main": [
+        [
+          {
+            "node": "Upsert backfill (by Sale ID)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
